@@ -1,0 +1,68 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environments
+.env
+.env.*
+venv/
+.venv/
+env/
+virtualenv/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+*.sw?
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# pyright
+.pyright/
+
+# pytest
+.pytest_cache/
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
+
+# Coverage
+coverage/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.csv
+!mock_data/
+mock_data/*.csv

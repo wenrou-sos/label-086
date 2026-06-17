@@ -492,13 +492,37 @@ def _render_area_comparison(full_df, filtered_df, selected_area):
     """渲染区域对比分析"""
     st.markdown("### 🗺️ 各爆破区域对比")
     
-    area_stats = filtered_df.groupby('blast_area').agg({
-        'powder_factor': ['mean', 'std'],
-        'fragmentation_quality': ['mean', 'std', 'count'],
-        'is_optimal': 'sum'
-    }).reset_index()
-    area_stats.columns = ['区域', '平均单耗', '单耗标准差', '平均合格率', '合格率标准差', '爆破次数', '最佳次数']
+    if filtered_df.empty or 'blast_area' not in filtered_df.columns:
+        st.info("暂无区域对比数据")
+        return
+    
+    # 使用安全的分组聚合方式，避免多层索引列名问题
+    area_groups = filtered_df.groupby('blast_area')
+    
+    area_stats_list = []
+    for area, group in area_groups:
+        area_stats_list.append({
+            '区域': area,
+            '平均单耗': group['powder_factor'].mean(),
+            '单耗标准差': group['powder_factor'].std(),
+            '平均合格率(%)': group['fragmentation_quality'].mean(),
+            '合格率标准差': group['fragmentation_quality'].std(),
+            '爆破次数': len(group),
+            '最佳次数': int(group['is_optimal'].sum()) if 'is_optimal' in group.columns else 0
+        })
+    
+    area_stats = pd.DataFrame(area_stats_list)
+    
+    if area_stats.empty:
+        st.info("暂无区域对比数据")
+        return
+    
     area_stats['最佳占比(%)'] = (area_stats['最佳次数'] / area_stats['爆破次数'] * 100).round(1)
+    area_stats = area_stats.sort_values('区域').reset_index(drop=True)
+    
+    # 动态颜色分配
+    color_palette = ['#2563eb', '#059669', '#f59e0b', '#7c3aed', '#dc2626', '#0891b2']
+    area_colors = [color_palette[i % len(color_palette)] for i in range(len(area_stats))]
     
     # 平行坐标图 / 雷达图
     col1, col2 = st.columns([1, 1])
@@ -509,20 +533,21 @@ def _render_area_comparison(full_df, filtered_df, selected_area):
         fig1.add_trace(go.Bar(
             x=area_stats['区域'],
             y=area_stats['平均合格率(%)'],
-            marker_color=['#2563eb', '#059669', '#f59e0b', '#7c3aed'],
+            marker_color=area_colors,
             text=area_stats['平均合格率(%)'].round(1).astype(str) + '%',
             textposition='outside',
             error_y=dict(
                 type='data',
-                array=area_stats['合格率标准差'],
+                array=area_stats['合格率标准差'].fillna(0),
                 visible=True
             )
         ))
+        y_min = max(60, area_stats['平均合格率(%)'].min() - 10)
         fig1.update_layout(
             title='各区域平均块度合格率',
             xaxis_title='爆破区域',
             yaxis_title='合格率 (%)',
-            yaxis=dict(range=[75, 100]),
+            yaxis=dict(range=[y_min, 100]),
             template='plotly_white',
             height=320
         )
@@ -534,7 +559,7 @@ def _render_area_comparison(full_df, filtered_df, selected_area):
         fig2.add_trace(go.Bar(
             x=area_stats['区域'],
             y=area_stats['最佳占比(%)'],
-            marker_color=['#2563eb', '#059669', '#f59e0b', '#7c3aed'],
+            marker_color=area_colors,
             text=area_stats['最佳占比(%)'].astype(str) + '%',
             textposition='outside'
         ))

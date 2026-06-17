@@ -106,7 +106,7 @@ def render_overview():
         shovel_df = load_shovel_efficiency()
         truck_df = load_truck_efficiency()
         loss_df = load_loss_dilution()
-        blast_df = load_blasting_efficiency()
+        blast_df = load_blasting_effect()
         cost_df = load_mining_cost().tail(6)
         
         col1, col2, col3, col4, col5 = st.columns(5)

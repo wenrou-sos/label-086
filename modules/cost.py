@@ -10,14 +10,23 @@ import streamlit as st
 from utils.data_loader import load_mining_cost
 
 
-def render_cost_analysis():
+def render_cost_analysis(config=None):
     """渲染成本分析模块"""
     st.markdown("## 💰 成本分析")
+    
+    if config is None:
+        from utils.config import load_config
+        config = load_config()
+    
+    cost_cfg = config['cost']
     
     df = load_mining_cost()
     if df.empty:
         st.warning("成本数据加载失败，请检查数据文件")
         return
+    
+    # 根据配置动态标记异常
+    df = _add_dynamic_anomaly(df, cost_cfg)
     
     # 筛选控件
     col1, col2, col3 = st.columns(3)
@@ -41,22 +50,22 @@ def render_cost_analysis():
         filtered_df = filtered_df[filtered_df['year'] == selected_year]
     
     # 总体KPI
-    _render_kpi_cards(filtered_df, df)
+    _render_kpi_cards(filtered_df, df, cost_cfg)
     
     st.markdown("---")
     
     # 根据分析类型显示内容
     if analysis_type == "成本构成分析":
-        _render_cost_composition(filtered_df, show_anomaly)
+        _render_cost_composition(filtered_df, show_anomaly, cost_cfg)
     elif analysis_type == "同比环比分析":
-        _render_yoy_mom_analysis(df, filtered_df)
+        _render_yoy_mom_analysis(df, filtered_df, cost_cfg)
     else:
-        _render_cost_trend(df, filtered_df)
+        _render_cost_trend(df, filtered_df, cost_cfg)
     
     st.markdown("---")
     
     # 成本异常预警
-    _render_cost_warnings(df, filtered_df)
+    _render_cost_warnings(df, filtered_df, cost_cfg)
     
     # 详细数据
     with st.expander("📋 查看完整成本数据"):
@@ -76,9 +85,55 @@ def render_cost_analysis():
         st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
 
 
-def _render_kpi_cards(current_df, full_df):
+def _add_dynamic_anomaly(df, cost_cfg):
+    """根据配置动态添加成本异常标记"""
+    df = df.copy()
+    warn = cost_cfg['total_cost_warning']
+    fluc_warn = cost_cfg['cost_fluctuation_warning']
+    
+    # 基于单位成本阈值的异常
+    df['is_anomaly_dyn_cost'] = df['total_cost'] > warn
+    
+    # 基于波动的异常（环比变化超过阈值）
+    df['mom_pct'] = df['total_cost'].pct_change() * 100
+    df['is_anomaly_dyn_fluc'] = df['mom_pct'].abs() > fluc_warn
+    
+    # 综合异常标记
+    df['is_anomaly_dyn'] = df['is_anomaly_dyn_cost'] | df['is_anomaly_dyn_fluc']
+    
+    # 异常类型
+    def _get_anomaly_type(row):
+        if row['is_anomaly_dyn_cost']:
+            return 'total'
+        elif row['is_anomaly_dyn_fluc']:
+            return 'fluctuation'
+        return None
+    
+    df['anomaly_type_dyn'] = df.apply(_get_anomaly_type, axis=1)
+    
+    return df
+
+
+def _render_kpi_cards(current_df, full_df, cost_cfg):
     """渲染KPI指标卡片"""
     avg_total = current_df['total_cost'].mean()
+    
+    warn = cost_cfg['total_cost_warning']
+    danger = cost_cfg['total_cost_danger']
+    
+    # 单位成本状态
+    if avg_total <= warn:
+        status = 'ok'
+        status_color = '#059669'
+        status_label = '✅ 正常'
+    elif avg_total <= danger:
+        status = 'warning'
+        status_color = '#f59e0b'
+        status_label = '⚠️ 预警'
+    else:
+        status = 'danger'
+        status_color = '#dc2626'
+        status_label = '🚨 异常'
     
     # 计算环比（与上一个周期比较）
     if len(current_df) >= 2:
@@ -114,8 +169,10 @@ def _render_kpi_cards(current_df, full_df):
         st.metric(
             label="平均单位成本",
             value=f"{avg_total:.2f} 元/吨",
-            delta=f"环比 {mom_change:+.2f}%"
+            delta=status_label,
+            delta_color='normal'
         )
+        st.caption(f"<span style='color:{status_color}'>预警: {warn}元 | 危险: {danger}元</span>", unsafe_allow_html=True)
     with col2:
         delta_color = "inverse" if yoy_change > 0 else "normal"
         st.metric(
@@ -134,17 +191,21 @@ def _render_kpi_cards(current_df, full_df):
             delta=f"{max_item[1]:.2f} 元/吨"
         )
     with col4:
-        anomaly_count = current_df['is_anomaly'].sum()
+        anomaly_count = int(current_df['is_anomaly_dyn'].sum())
+        total_count = len(current_df)
         st.metric(
             label="成本异常次数",
             value=f"{anomaly_count} 次",
-            delta=f"占比 {anomaly_count/len(current_df)*100:.1f}%" if len(current_df) > 0 else ""
+            delta=f"占比 {anomaly_count/total_count*100:.1f}%" if total_count > 0 else ""
         )
 
 
-def _render_cost_composition(df, show_anomaly):
+def _render_cost_composition(df, show_anomaly, cost_cfg):
     """渲染成本构成分析"""
     st.markdown("### 🧩 成本构成分析")
+    
+    warn = cost_cfg['total_cost_warning']
+    danger = cost_cfg['total_cost_danger']
     
     col1, col2 = st.columns([1.5, 1])
     
@@ -173,17 +234,37 @@ def _render_cost_composition(df, show_anomaly):
                 marker_color=color
             ))
         
-        # 标记异常
+        # 标记异常（使用动态异常标记）
         if show_anomaly:
-            anomaly_df = df[df['is_anomaly'] == True]
+            anomaly_df = df[df['is_anomaly_dyn'] == True]
             for _, row in anomaly_df.iterrows():
                 fig.add_vline(
                     x=row['date'],
                     line_dash="dash",
-                    line_color="red",
+                    line_color="#dc2626",
                     line_width=2,
                     opacity=0.6
                 )
+        
+        # 预警线
+        fig.add_hline(
+            y=warn,
+            line_dash="dash",
+            line_color="#f59e0b",
+            line_width=1.5,
+            annotation_text=f"预警线 ({warn}元/吨)",
+            annotation_position="top right"
+        )
+        
+        # 危险线
+        fig.add_hline(
+            y=danger,
+            line_dash="dot",
+            line_color="#dc2626",
+            line_width=1.5,
+            annotation_text=f"危险线 ({danger}元/吨)",
+            annotation_position="bottom right"
+        )
         
         fig.update_layout(
             barmode='stack',
@@ -264,9 +345,12 @@ def _render_cost_composition(df, show_anomaly):
     st.plotly_chart(fig_line, use_container_width=True)
 
 
-def _render_yoy_mom_analysis(full_df, current_df):
+def _render_yoy_mom_analysis(full_df, current_df, cost_cfg):
     """渲染同比环比分析"""
     st.markdown("### 📊 同比环比分析")
+    
+    fluc_warn = cost_cfg['cost_fluctuation_warning']
+    fluc_danger = cost_cfg['cost_fluctuation_danger']
     
     # 计算同比和环比数据
     analysis_df = current_df.copy()
@@ -317,6 +401,12 @@ def _render_yoy_mom_analysis(full_df, current_df):
             ))
         
         fig_mom.add_hline(y=0, line_color="gray", line_dash="dash")
+        # 波动预警线（正负）
+        fig_mom.add_hline(y=fluc_warn, line_dash="dash", line_color="#f59e0b", line_width=1, annotation_text=f"+{fluc_warn}%")
+        fig_mom.add_hline(y=-fluc_warn, line_dash="dash", line_color="#f59e0b", line_width=1, annotation_text=f"-{fluc_warn}%")
+        fig_mom.add_hline(y=fluc_danger, line_dash="dot", line_color="#dc2626", line_width=1, annotation_text=f"+{fluc_danger}%")
+        fig_mom.add_hline(y=-fluc_danger, line_dash="dot", line_color="#dc2626", line_width=1, annotation_text=f"-{fluc_danger}%")
+        
         fig_mom.update_layout(
             title='各成本项环比变化率',
             xaxis_title='月份',
@@ -350,6 +440,10 @@ def _render_yoy_mom_analysis(full_df, current_df):
                 ))
         
         fig_yoy.add_hline(y=0, line_color="gray", line_dash="dash")
+        # 波动预警线
+        fig_yoy.add_hline(y=fluc_warn, line_dash="dash", line_color="#f59e0b", line_width=1)
+        fig_yoy.add_hline(y=-fluc_warn, line_dash="dash", line_color="#f59e0b", line_width=1)
+        
         fig_yoy.update_layout(
             title='各成本项同比变化率',
             xaxis_title='月份',
@@ -384,9 +478,12 @@ def _render_yoy_mom_analysis(full_df, current_df):
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
-def _render_cost_trend(full_df, current_df):
+def _render_cost_trend(full_df, current_df, cost_cfg):
     """渲染成本趋势分析"""
     st.markdown("### 📈 成本趋势分析")
+    
+    warn = cost_cfg['total_cost_warning']
+    danger = cost_cfg['total_cost_danger']
     
     col1, col2 = st.columns([2, 1])
     
@@ -399,8 +496,8 @@ def _render_cost_trend(full_df, current_df):
         
         fig = go.Figure()
         
-        # 各区域柱（显示异常）
-        colors = ['#dc2626' if a else '#2563eb' for a in df['is_anomaly']]
+        # 各区域柱（显示异常，使用动态异常标记）
+        colors = ['#dc2626' if a else '#2563eb' for a in df['is_anomaly_dyn']]
         
         fig.add_trace(go.Bar(
             x=df['date'],
@@ -418,12 +515,24 @@ def _render_cost_trend(full_df, current_df):
             line=dict(color='#f59e0b', width=2.5, dash='dash')
         ))
         
-        # 平均值线
+        # 预警线
         fig.add_hline(
-            y=df['total_cost'].mean(),
+            y=warn,
+            line_dash="dash",
+            line_color="#f59e0b",
+            line_width=1.5,
+            annotation_text=f"预警线 ({warn}元/吨)",
+            annotation_position="top right"
+        )
+        
+        # 危险线
+        fig.add_hline(
+            y=danger,
             line_dash="dot",
-            line_color="green",
-            annotation_text=f"平均: {df['total_cost'].mean():.2f}元/吨"
+            line_color="#dc2626",
+            line_width=1.5,
+            annotation_text=f"危险线 ({danger}元/吨)",
+            annotation_position="bottom right"
         )
         
         fig.update_layout(
@@ -495,11 +604,11 @@ def _render_cost_trend(full_df, current_df):
     st.plotly_chart(fig_heatmap, use_container_width=True)
 
 
-def _render_cost_warnings(full_df, current_df):
+def _render_cost_warnings(full_df, current_df, cost_cfg):
     """渲染成本异常预警和优化建议"""
     st.markdown("### ⚠️ 成本异常预警与优化建议")
     
-    anomaly_df = current_df[current_df['is_anomaly'] == True].copy()
+    anomaly_df = current_df[current_df['is_anomaly_dyn'] == True].copy()
     
     if anomaly_df.empty:
         st.success("🎉 当前筛选条件下没有成本异常记录！")
@@ -511,37 +620,36 @@ def _render_cost_warnings(full_df, current_df):
         st.markdown("#### 🚨 异常记录详情")
         
         anomaly_type_map = {
-            'drilling': '穿孔成本',
-            'blasting': '爆破成本',
-            'loading': '铲装成本',
-            'transport': '运输成本'
+            'total': '单位成本超标',
+            'fluctuation': '成本波动过大'
         }
         
-        for _, row in anomaly_df.iterrows():
-            anomaly_type = anomaly_type_map.get(row['anomaly_type'], '未知')
+        for _, row in anomaly_df.head(10).iterrows():
+            anomaly_type = anomaly_type_map.get(row['anomaly_type_dyn'], '未知')
             
             with st.container(border=True):
-                st.markdown(f"**📅 {row['date']}** - {anomaly_type}异常")
+                st.markdown(f"**📅 {row['date']}** - {anomaly_type}")
+                st.markdown(f"- 当月总成本: {row['total_cost']:.2f} 元/吨")
                 
-                cost_col = row['anomaly_type'] + '_cost'
-                if cost_col in row:
-                    st.markdown(f"- 异常成本项: {row[cost_col]:.2f} 元/吨")
-                    st.markdown(f"- 当月总成本: {row['total_cost']:.2f} 元/吨")
+                if 'mom_pct' in row and pd.notna(row['mom_pct']):
+                    st.markdown(f"- 环比变化: {row['mom_pct']:+.2f}%")
                 
-                if row['optimization_suggestion']:
-                    st.markdown(f"- 💡 **优化建议**: {row['optimization_suggestion']}")
+                if row['anomaly_type_dyn'] == 'total':
+                    st.markdown(f"- 💡 **优化建议**: 关注成本构成，重点控制{_get_max_cost_item(row)}项支出")
+                else:
+                    st.markdown(f"- 💡 **优化建议**: 分析波动原因，加强成本预算管控")
     
     with col2:
         st.markdown("#### 📊 异常类型分布")
         
-        type_counts = anomaly_df['anomaly_type'].map(anomaly_type_map).value_counts().reset_index()
+        type_counts = anomaly_df['anomaly_type_dyn'].map(anomaly_type_map).value_counts().reset_index()
         type_counts.columns = ['异常类型', '次数']
         
         fig = px.pie(
             type_counts,
             names='异常类型',
             values='次数',
-            title='各成本项异常次数分布',
+            title='各成本异常类型分布',
             color_discrete_sequence=['#ef4444', '#f59e0b', '#8b5cf6', '#3b82f6'],
             hole=0.4
         )
@@ -550,11 +658,25 @@ def _render_cost_warnings(full_df, current_df):
         
         # 通用优化建议
         st.markdown("#### 💡 成本优化建议汇总")
+        opt_min = cost_cfg.get('optimal_powder_min', 0.45)
+        opt_max = cost_cfg.get('optimal_powder_max', 0.55)
         suggestions = [
             "穿孔成本: 优化钻孔参数，减少废孔率；定期检查钻头磨损情况",
-            "爆破成本: 采用最佳炸药单耗区间（0.45-0.55kg/t），优化爆破设计",
+            f"爆破成本: 采用最佳炸药单耗区间（{opt_min}-{opt_max}kg/t），优化爆破设计",
             "铲装成本: 合理调度电铲设备，减少等待时间；加强设备维护",
             "运输成本: 优化运输路线，减少空驶距离；合理配置矿车数量"
         ]
         for s in suggestions:
             st.markdown(f"- {s}")
+
+
+def _get_max_cost_item(row):
+    """获取单条记录中最高的成本项"""
+    cost_items = [
+        ('穿孔', row['drilling_cost']),
+        ('爆破', row['blasting_cost']),
+        ('铲装', row['loading_cost']),
+        ('运输', row['transport_cost'])
+    ]
+    max_item = max(cost_items, key=lambda x: x[1])
+    return max_item[0]

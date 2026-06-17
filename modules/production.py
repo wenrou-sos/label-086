@@ -14,9 +14,15 @@ from utils.data_loader import (
 )
 
 
-def render_production_analysis():
+def render_production_analysis(config=None):
     """渲染产量分析模块"""
     st.markdown("## 🏭 产量分析")
+    
+    if config is None:
+        from utils.config import load_config
+        config = load_config()
+    
+    prod_cfg = config['production']
     
     # 数据加载
     daily_df = load_daily_production()
@@ -75,7 +81,7 @@ def render_production_analysis():
     actual_col, planned_col = metric_map[metric_type]
     
     # KPI指标卡片
-    _render_kpi_cards(df, actual_col, planned_col, metric_type, time_dimension)
+    _render_kpi_cards(df, actual_col, planned_col, metric_type, time_dimension, prod_cfg)
     
     st.markdown("---")
     
@@ -89,7 +95,7 @@ def render_production_analysis():
     col_chart, col_table = st.columns([2, 1])
     
     with col_chart:
-        fig_completion = _create_completion_rate_chart(df, x_col, x_label)
+        fig_completion = _create_completion_rate_chart(df, x_col, x_label, prod_cfg)
         st.plotly_chart(fig_completion, use_container_width=True)
     
     with col_table:
@@ -140,11 +146,27 @@ def _get_date_range(time_dimension, daily_df, monthly_df, yearly_df):
         )
 
 
-def _render_kpi_cards(df, actual_col, planned_col, metric_type, time_dimension):
+def _render_kpi_cards(df, actual_col, planned_col, metric_type, time_dimension, prod_cfg):
     """渲染KPI指标卡片"""
     total_actual = df[actual_col].sum()
     total_planned = df[planned_col].sum()
     avg_completion = df['completion_rate'].mean()
+    
+    warn = prod_cfg['completion_rate_warning']
+    danger = prod_cfg['completion_rate_danger']
+    
+    if avg_completion >= warn:
+        status = 'ok'
+        status_color = '#059669'
+        status_label = '✅ 达标'
+    elif avg_completion >= danger:
+        status = 'warning'
+        status_color = '#f59e0b'
+        status_label = '⚠️ 预警'
+    else:
+        status = 'danger'
+        status_color = '#dc2626'
+        status_label = '🚨 异常'
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -166,9 +188,10 @@ def _render_kpi_cards(df, actual_col, planned_col, metric_type, time_dimension):
         st.metric(
             label="完成率",
             value=f"{avg_completion:.1f}%",
-            delta=f"{delta_pct:+.1f}%",
+            delta=status_label,
             delta_color="normal"
         )
+        st.caption(f"<span style='color:{status_color}'>预警线: {warn}% | 危险线: {danger}%</span>", unsafe_allow_html=True)
     with col4:
         period = len(df)
         period_label = "天" if time_dimension == "按日" else ("个月" if time_dimension == "按月" else "年")
@@ -226,9 +249,12 @@ def _create_trend_chart(df, x_col, actual_col, planned_col, x_label, metric_type
     return fig
 
 
-def _create_completion_rate_chart(df, x_col, x_label):
+def _create_completion_rate_chart(df, x_col, x_label, prod_cfg):
     """创建计划完成率趋势图"""
     fig = go.Figure()
+    
+    warn = prod_cfg['completion_rate_warning']
+    danger = prod_cfg['completion_rate_danger']
     
     # 完成率折线
     fig.add_trace(go.Scatter(
@@ -242,14 +268,38 @@ def _create_completion_rate_chart(df, x_col, x_label):
         fillcolor='rgba(5, 150, 105, 0.1)'
     ))
     
-    # 100%基准线
+    # 100%目标线
     fig.add_hline(
         y=100,
         line_dash="dash",
         line_color="#dc2626",
+        line_width=2,
         annotation_text="目标线 (100%)",
         annotation_position="bottom right"
     )
+    
+    # 预警线
+    fig.add_hline(
+        y=warn,
+        line_dash="dash",
+        line_color="#f59e0b",
+        line_width=1.5,
+        annotation_text=f"预警线 ({warn}%)",
+        annotation_position="top left"
+    )
+    
+    # 危险线
+    fig.add_hline(
+        y=danger,
+        line_dash="dot",
+        line_color="#dc2626",
+        line_width=1.5,
+        annotation_text=f"危险线 ({danger}%)",
+        annotation_position="bottom left"
+    )
+    
+    y_min = min(danger - 5, df['completion_rate'].min() - 5)
+    y_max = max(105, df['completion_rate'].max() + 5)
     
     fig.update_layout(
         title=dict(
@@ -258,9 +308,13 @@ def _create_completion_rate_chart(df, x_col, x_label):
         ),
         xaxis_title=x_label,
         yaxis_title='完成率（%）',
-        yaxis=dict(
-            range=[min(70, df['completion_rate'].min() - 5), 
-                   max(110, df['completion_rate'].max() + 5)]
+        yaxis=dict(range=[y_min, y_max]),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
         ),
         template='plotly_white',
         height=400

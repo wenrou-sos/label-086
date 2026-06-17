@@ -25,6 +25,12 @@ from utils.data_loader import (
     load_blasting_effect,
     load_mining_cost
 )
+from utils.config import (
+    load_config,
+    save_config,
+    reset_config,
+    DEFAULT_CONFIG
+)
 from modules.production import render_production_analysis
 from modules.equipment import render_equipment_efficiency
 from modules.loss_dilution import render_loss_dilution
@@ -87,7 +93,7 @@ def check_and_generate_data():
                 st.info("请手动运行: python generate_data.py")
 
 
-def render_overview():
+def render_overview(config):
     """渲染首页概览"""
     st.markdown("# ⛏️ 露天矿关键生产指标分析看板")
     st.markdown("---")
@@ -109,53 +115,96 @@ def render_overview():
         blast_df = load_blasting_effect()
         cost_df = load_mining_cost().tail(6)
         
+        blast_cfg = config['blasting']
+        eq_cfg = config['equipment']
+        ld_cfg = config['loss_dilution']
+        cost_cfg = config['cost']
+        
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             if len(prod_df) > 0:
                 total = prod_df['total_volume'].sum()
+                avg_monthly = total / 6
+                target = config['production']['target_total_volume'] * 30
+                status = 'ok' if avg_monthly >= target * 0.9 else 'warning'
+                status_color = '#059669' if status == 'ok' else '#f59e0b'
                 st.metric(
                     label="近6月采剥总量",
                     value=f"{total/10000:.1f}万吨",
                     delta=f"月均 {total/6/10000:.1f}万"
                 )
+                st.caption(f"<span style='color:{status_color}'>月目标: {target/10000:.1f}万吨</span>", unsafe_allow_html=True)
         
         with col2:
             if len(shovel_df) > 0:
                 avg_eff = shovel_df['loading_efficiency'].mean()
+                warn = eq_cfg['shovel_efficiency_warning']
+                danger = eq_cfg['shovel_efficiency_danger']
+                status = 'ok' if avg_eff <= warn else ('warning' if avg_eff <= danger else 'danger')
+                status_color = '#059669' if status == 'ok' else ('#f59e0b' if status == 'warning' else '#dc2626')
+                status_text = '✅ 正常' if status == 'ok' else ('⚠️ 预警' if status == 'warning' else '🚨 异常')
                 st.metric(
                     label="电铲平均装车效率",
                     value=f"{avg_eff:.1f} 秒/车",
-                    delta="越低越好"
+                    delta=status_text,
+                    delta_color='normal'
                 )
+                st.caption(f"<span style='color:{status_color}'>预警线: {warn} 秒/车</span>", unsafe_allow_html=True)
         
         with col3:
             if len(loss_df) > 0:
                 avg_loss = loss_df['loss_rate'].mean()
                 avg_dil = loss_df['dilution_rate'].mean()
+                loss_warn = ld_cfg['loss_rate_warning']
+                dil_warn = ld_cfg['dilution_rate_warning']
+                loss_ok = avg_loss <= loss_warn
+                dil_ok = avg_dil <= dil_warn
+                status = 'ok' if (loss_ok and dil_ok) else 'warning'
+                status_color = '#059669' if status == 'ok' else '#f59e0b'
+                status_text = '✅ 正常' if status == 'ok' else '⚠️ 预警'
                 st.metric(
                     label="平均损失率/贫化率",
                     value=f"{avg_loss:.1f}% / {avg_dil:.1f}%",
-                    delta="参考: 5%/8%"
+                    delta=status_text,
+                    delta_color='normal'
                 )
+                st.caption(f"<span style='color:{status_color}'>参考线: {loss_warn}% / {dil_warn}%</span>", unsafe_allow_html=True)
         
         with col4:
             if len(blast_df) > 0:
-                optimal_rate = blast_df['is_optimal'].sum() / len(blast_df) * 100
+                opt_min = blast_cfg['optimal_powder_min']
+                opt_max = blast_cfg['optimal_powder_max']
+                is_optimal = (blast_df['powder_factor'] >= opt_min) & (blast_df['powder_factor'] <= opt_max)
+                optimal_rate = is_optimal.sum() / len(blast_df) * 100
+                target_rate = 60
+                status = 'ok' if optimal_rate >= target_rate else 'warning'
+                status_color = '#059669' if status == 'ok' else '#f59e0b'
+                status_text = '✅ 达标' if status == 'ok' else '⚠️ 偏低'
                 st.metric(
                     label="爆破最佳区间占比",
                     value=f"{optimal_rate:.1f}%",
-                    delta="目标: >60%"
+                    delta=status_text,
+                    delta_color='normal'
                 )
+                st.caption(f"<span style='color:{status_color}'>最佳区间: {opt_min}-{opt_max} kg/t</span>", unsafe_allow_html=True)
         
         with col5:
             if len(cost_df) > 0:
                 avg_cost = cost_df['total_cost'].mean()
+                latest_cost = cost_df.iloc[-1]['total_cost']
+                warn = cost_cfg['total_cost_warning']
+                danger = cost_cfg['total_cost_danger']
+                status = 'ok' if latest_cost <= warn else ('warning' if latest_cost <= danger else 'danger')
+                status_color = '#059669' if status == 'ok' else ('#f59e0b' if status == 'warning' else '#dc2626')
+                status_text = '✅ 正常' if status == 'ok' else ('⚠️ 预警' if status == 'warning' else '🚨 异常')
                 st.metric(
                     label="近6月平均单位成本",
                     value=f"{avg_cost:.2f} 元/吨",
-                    delta=f"最新 {cost_df.iloc[-1]['total_cost']:.2f}"
+                    delta=status_text,
+                    delta_color='normal'
                 )
+                st.caption(f"<span style='color:{status_color}'>预警线: {warn} 元/吨</span>", unsafe_allow_html=True)
         
     except Exception as e:
         st.warning(f"概览数据加载异常: {e}")
@@ -216,12 +265,190 @@ def render_overview():
         """)
 
 
+def render_alert_settings():
+    """渲染预警设置面板"""
+    st.markdown("### ⚙️ 预警设置")
+    st.markdown("自定义各指标的预警阈值，修改后保存生效")
+    
+    config = load_config()
+    
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 产量", "🚜 设备", "⚠️ 损失贫化", "💥 爆破", "💰 成本"
+    ])
+    
+    with tab1:
+        st.markdown("**产量指标阈值**")
+        prod_cfg = config['production'].copy()
+        prod_cfg['completion_rate_warning'] = st.slider(
+            "计划完成率预警线 (%)", 50, 120,
+            int(prod_cfg['completion_rate_warning']), 1,
+            key="prod_warn"
+        )
+        prod_cfg['completion_rate_danger'] = st.slider(
+            "计划完成率危险线 (%)", 30, 100,
+            int(prod_cfg['completion_rate_danger']), 1,
+            key="prod_danger"
+        )
+        prod_cfg['target_total_volume'] = st.number_input(
+            "目标日采剥总量 (吨/日)", 5000, 50000,
+            int(prod_cfg['target_total_volume']), 500,
+            key="prod_target"
+        )
+        config['production'] = prod_cfg
+    
+    with tab2:
+        st.markdown("**设备效率阈值**")
+        eq_cfg = config['equipment'].copy()
+        eq_cfg['shovel_efficiency_warning'] = st.slider(
+            "电铲效率预警线 (秒/车，越小越好)", 40, 120,
+            int(eq_cfg['shovel_efficiency_warning']), 1,
+            key="shovel_warn"
+        )
+        eq_cfg['shovel_efficiency_danger'] = st.slider(
+            "电铲效率危险线 (秒/车)", 50, 150,
+            int(eq_cfg['shovel_efficiency_danger']), 1,
+            key="shovel_danger"
+        )
+        eq_cfg['truck_efficiency_warning'] = st.slider(
+            "矿车效率预警线 (趟/班，越大越好)", 3, 20,
+            int(eq_cfg['truck_efficiency_warning']), 1,
+            key="truck_warn"
+        )
+        eq_cfg['truck_efficiency_danger'] = st.slider(
+            "矿车效率危险线 (趟/班)", 1, 15,
+            int(eq_cfg['truck_efficiency_danger']), 1,
+            key="truck_danger"
+        )
+        eq_cfg['bottom_n_count'] = st.slider(
+            "低效设备展示数量 (台)", 3, 10,
+            int(eq_cfg['bottom_n_count']), 1,
+            key="bottom_n"
+        )
+        config['equipment'] = eq_cfg
+    
+    with tab3:
+        st.markdown("**损失贫化阈值**")
+        ld_cfg = config['loss_dilution'].copy()
+        ld_cfg['loss_rate_warning'] = st.slider(
+            "损失率预警线 (%)", 1.0, 15.0,
+            float(ld_cfg['loss_rate_warning']), 0.5,
+            key="loss_warn"
+        )
+        ld_cfg['loss_rate_danger'] = st.slider(
+            "损失率危险线 (%)", 2.0, 20.0,
+            float(ld_cfg['loss_rate_danger']), 0.5,
+            key="loss_danger"
+        )
+        ld_cfg['dilution_rate_warning'] = st.slider(
+            "贫化率预警线 (%)", 2.0, 20.0,
+            float(ld_cfg['dilution_rate_warning']), 0.5,
+            key="dil_warn"
+        )
+        ld_cfg['dilution_rate_danger'] = st.slider(
+            "贫化率危险线 (%)", 3.0, 25.0,
+            float(ld_cfg['dilution_rate_danger']), 0.5,
+            key="dil_danger"
+        )
+        ld_cfg['grade_deviation_warning'] = st.slider(
+            "品位偏差预警线 (±%)", 0.5, 10.0,
+            float(ld_cfg['grade_deviation_warning']), 0.5,
+            key="grade_warn"
+        )
+        ld_cfg['grade_deviation_danger'] = st.slider(
+            "品位偏差危险线 (±%)", 1.0, 15.0,
+            float(ld_cfg['grade_deviation_danger']), 0.5,
+            key="grade_danger"
+        )
+        config['loss_dilution'] = ld_cfg
+    
+    with tab4:
+        st.markdown("**爆破效果阈值**")
+        bl_cfg = config['blasting'].copy()
+        col_a, col_b = st.columns(2)
+        with col_a:
+            bl_cfg['optimal_powder_min'] = st.number_input(
+                "最佳单耗下限 (kg/t)", 0.20, 0.60,
+                float(bl_cfg['optimal_powder_min']), 0.05,
+                key="blast_min"
+            )
+        with col_b:
+            bl_cfg['optimal_powder_max'] = st.number_input(
+                "最佳单耗上限 (kg/t)", 0.40, 0.80,
+                float(bl_cfg['optimal_powder_max']), 0.05,
+                key="blast_max"
+            )
+        bl_cfg['quality_target'] = st.slider(
+            "块度合格率目标 (%)", 70, 99,
+            int(bl_cfg['quality_target']), 1,
+            key="blast_target"
+        )
+        bl_cfg['quality_warning'] = st.slider(
+            "块度合格率预警线 (%)", 50, 95,
+            int(bl_cfg['quality_warning']), 1,
+            key="blast_warn"
+        )
+        bl_cfg['quality_danger'] = st.slider(
+            "块度合格率危险线 (%)", 40, 85,
+            int(bl_cfg['quality_danger']), 1,
+            key="blast_danger"
+        )
+        config['blasting'] = bl_cfg
+    
+    with tab5:
+        st.markdown("**成本指标阈值**")
+        cost_cfg = config['cost'].copy()
+        cost_cfg['total_cost_warning'] = st.slider(
+            "单位成本预警线 (元/吨)", 6.0, 15.0,
+            float(cost_cfg['total_cost_warning']), 0.5,
+            key="cost_warn"
+        )
+        cost_cfg['total_cost_danger'] = st.slider(
+            "单位成本危险线 (元/吨)", 7.0, 20.0,
+            float(cost_cfg['total_cost_danger']), 0.5,
+            key="cost_danger"
+        )
+        cost_cfg['cost_fluctuation_warning'] = st.slider(
+            "成本波动预警线 (±%)", 1.0, 20.0,
+            float(cost_cfg['cost_fluctuation_warning']), 0.5,
+            key="cost_fluc_warn"
+        )
+        cost_cfg['cost_fluctuation_danger'] = st.slider(
+            "成本波动危险线 (±%)", 2.0, 30.0,
+            float(cost_cfg['cost_fluctuation_danger']), 0.5,
+            key="cost_fluc_danger"
+        )
+        config['cost'] = cost_cfg
+    
+    st.markdown("---")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 保存配置", use_container_width=True, type="primary"):
+            if save_config(config):
+                st.success("配置保存成功！页面将自动刷新")
+                from utils import config as cfg_mod
+                cfg_mod.load_config.clear()
+                st.rerun()
+    with col2:
+        if st.button("🔄 恢复默认", use_container_width=True):
+            if reset_config():
+                from utils import config as cfg_mod
+                cfg_mod.load_config.clear()
+                st.success("已恢复默认配置")
+                st.rerun()
+    
+    st.caption("💡 配置保存在 alert_config.json 文件中")
+
+
 def main():
     """主函数"""
     load_css()
     
     # 数据检查
     check_and_generate_data()
+    
+    # 加载配置
+    alert_config = load_config()
     
     # 侧边栏导航
     with st.sidebar:
@@ -241,6 +468,9 @@ def main():
             index=0
         )
         
+        with st.expander("⚙️ 预警设置", expanded=False):
+            render_alert_settings()
+        
         st.markdown("---")
         st.markdown("### ℹ️ 使用说明")
         st.markdown("""
@@ -248,6 +478,7 @@ def main():
         2. 使用页面顶部的筛选器调整分析范围
         3. 点击图表可进行交互操作
         4. 展开折叠面板查看详细数据
+        5. 打开「预警设置」可自定义阈值
         """)
         
         st.markdown("---")
@@ -260,17 +491,17 @@ def main():
     
     # 页面路由
     if page == "🏠 系统概览":
-        render_overview()
+        render_overview(alert_config)
     elif page == "🏭 产量分析":
-        render_production_analysis()
+        render_production_analysis(alert_config)
     elif page == "🚜 设备效率":
-        render_equipment_efficiency()
+        render_equipment_efficiency(alert_config)
     elif page == "⚠️ 损失贫化":
-        render_loss_dilution()
+        render_loss_dilution(alert_config)
     elif page == "💥 爆破效果":
-        render_blasting_effect()
+        render_blasting_effect(alert_config)
     elif page == "💰 成本分析":
-        render_cost_analysis()
+        render_cost_analysis(alert_config)
     
     # 页脚
     st.markdown("---")

@@ -10,14 +10,23 @@ import streamlit as st
 from utils.data_loader import load_loss_dilution
 
 
-def render_loss_dilution():
+def render_loss_dilution(config=None):
     """渲染损失贫化分析模块"""
     st.markdown("## ⚠️ 损失贫化分析")
+    
+    if config is None:
+        from utils.config import load_config
+        config = load_config()
+    
+    ld_cfg = config['loss_dilution']
     
     df = load_loss_dilution()
     if df.empty:
         st.warning("损失贫化数据加载失败，请检查数据文件")
         return
+    
+    # 根据配置动态标记异常
+    df = _add_anomaly_flags(df, ld_cfg)
     
     # 筛选控件
     col1, col2, col3 = st.columns(3)
@@ -50,59 +59,86 @@ def render_loss_dilution():
         filtered_df = filtered_df[filtered_df['zone'] == selected_zone]
     
     if show_anomaly_only:
-        filtered_df = filtered_df[filtered_df['is_anomaly'] == True]
+        filtered_df = filtered_df[filtered_df['is_anomaly_dyn'] == True]
     
     # 总体KPI
-    _render_kpi_cards(filtered_df)
+    _render_kpi_cards(filtered_df, ld_cfg)
     
     st.markdown("---")
     
     # 损失率与贫化率趋势
-    _render_trend_charts(filtered_df, selected_zone)
+    _render_trend_charts(filtered_df, selected_zone, ld_cfg)
     
     st.markdown("---")
     
     # 品位对比
-    _render_grade_comparison(filtered_df, selected_zone)
+    _render_grade_comparison(filtered_df, selected_zone, ld_cfg)
     
     st.markdown("---")
     
     # 异常数据分析
-    _render_anomaly_analysis(df, filtered_df)
+    _render_anomaly_analysis(df, filtered_df, ld_cfg)
+
+
+def _add_anomaly_flags(df, ld_cfg):
+    """根据配置动态添加异常标记"""
+    df = df.copy()
+    loss_warn = ld_cfg['loss_rate_warning']
+    dil_warn = ld_cfg['dilution_rate_warning']
+    grade_warn = ld_cfg['grade_deviation_warning']
     
-    # 详细数据表
-    with st.expander("📋 查看完整数据明细"):
-        display_df = filtered_df.copy()
-        display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d')
-        display_df = display_df.sort_values('date', ascending=False)
-        display_cols = {
-            'date': '日期',
-            'zone': '采矿区域',
-            'loss_rate': '损失率(%)',
-            'dilution_rate': '贫化率(%)',
-            'actual_grade': '实际品位(%)',
-            'predicted_grade': '预测品位(%)',
-            'is_anomaly': '是否异常',
-            'anomaly_reason': '异常原因',
-            'ore_mined': '采矿量(吨)'
-        }
-        display_df = display_df[list(display_cols.keys())]
-        display_df.columns = list(display_cols.values())
-        display_df['损失率(%)'] = display_df['损失率(%)'].round(2)
-        display_df['贫化率(%)'] = display_df['贫化率(%)'].round(2)
-        display_df['实际品位(%)'] = display_df['实际品位(%)'].round(2)
-        display_df['预测品位(%)'] = display_df['预测品位(%)'].round(2)
-        display_df['采矿量(吨)'] = display_df['采矿量(吨)'].round(0).astype(int)
-        st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
+    df['grade_deviation'] = df['actual_grade'] - df['predicted_grade']
+    
+    loss_anomaly = df['loss_rate'] > loss_warn
+    dil_anomaly = df['dilution_rate'] > dil_warn
+    grade_anomaly = abs(df['grade_deviation']) > grade_warn
+    
+    df['is_anomaly_dyn'] = loss_anomaly | dil_anomaly | grade_anomaly
+    
+    # 生成异常原因
+    reasons = []
+    for _, row in df.iterrows():
+        reason_list = []
+        if row['loss_rate'] > loss_warn:
+            reason_list.append('损失率超标')
+        if row['dilution_rate'] > dil_warn:
+            reason_list.append('贫化率超标')
+        if abs(row['grade_deviation']) > grade_warn:
+            reason_list.append('品位偏差大')
+        reasons.append('、'.join(reason_list) if reason_list else '')
+    
+    df['anomaly_reason_dyn'] = reasons
+    return df
 
 
-def _render_kpi_cards(df):
+def _render_kpi_cards(df, ld_cfg):
     """渲染KPI指标卡片"""
     avg_loss = df['loss_rate'].mean()
     avg_dilution = df['dilution_rate'].mean()
-    avg_grade_diff = (df['actual_grade'] - df['predicted_grade']).mean()
-    anomaly_count = df['is_anomaly'].sum()
+    avg_grade_diff = df['grade_deviation'].mean() if 'grade_deviation' in df.columns else (df['actual_grade'] - df['predicted_grade']).mean()
+    anomaly_count = df['is_anomaly_dyn'].sum() if 'is_anomaly_dyn' in df.columns else df['is_anomaly'].sum()
     anomaly_rate = anomaly_count / len(df) * 100 if len(df) > 0 else 0
+    
+    loss_warn = ld_cfg['loss_rate_warning']
+    loss_danger = ld_cfg['loss_rate_danger']
+    dil_warn = ld_cfg['dilution_rate_warning']
+    dil_danger = ld_cfg['dilution_rate_danger']
+    grade_warn = ld_cfg['grade_deviation_warning']
+    
+    # 损失率状态
+    loss_status = 'ok' if avg_loss <= loss_warn else ('warning' if avg_loss <= loss_danger else 'danger')
+    loss_color = '#059669' if loss_status == 'ok' else ('#f59e0b' if loss_status == 'warning' else '#dc2626')
+    loss_label = '✅ 正常' if loss_status == 'ok' else ('⚠️ 预警' if loss_status == 'warning' else '🚨 异常')
+    
+    # 贫化率状态
+    dil_status = 'ok' if avg_dilution <= dil_warn else ('warning' if avg_dilution <= dil_danger else 'danger')
+    dil_color = '#059669' if dil_status == 'ok' else ('#f59e0b' if dil_status == 'warning' else '#dc2626')
+    dil_label = '✅ 正常' if dil_status == 'ok' else ('⚠️ 预警' if dil_status == 'warning' else '🚨 异常')
+    
+    # 品位偏差状态
+    grade_status = 'ok' if abs(avg_grade_diff) <= grade_warn else 'warning'
+    grade_color = '#059669' if grade_status == 'ok' else '#f59e0b'
+    grade_label = '✅ 正常' if grade_status == 'ok' else '⚠️ 预警'
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -110,22 +146,26 @@ def _render_kpi_cards(df):
         st.metric(
             label="平均损失率",
             value=f"{avg_loss:.2f}%",
-            delta="行业参考: <5%"
+            delta=loss_label,
+            delta_color='normal'
         )
+        st.caption(f"<span style='color:{loss_color}'>预警线: {loss_warn}%</span>", unsafe_allow_html=True)
     with col2:
         st.metric(
             label="平均贫化率",
             value=f"{avg_dilution:.2f}%",
-            delta="行业参考: <8%"
+            delta=dil_label,
+            delta_color='normal'
         )
+        st.caption(f"<span style='color:{dil_color}'>预警线: {dil_warn}%</span>", unsafe_allow_html=True)
     with col3:
-        delta_color = "normal" if avg_grade_diff < 0 else "inverse"
         st.metric(
             label="平均品位偏差",
             value=f"{avg_grade_diff:+.2f}%",
-            delta="实际vs预测",
-            delta_color=delta_color
+            delta=grade_label,
+            delta_color='normal'
         )
+        st.caption(f"<span style='color:{grade_color}'>允许偏差: ±{grade_warn}%</span>", unsafe_allow_html=True)
     with col4:
         st.metric(
             label="异常数据占比",
@@ -134,9 +174,14 @@ def _render_kpi_cards(df):
         )
 
 
-def _render_trend_charts(df, selected_zone):
+def _render_trend_charts(df, selected_zone, ld_cfg):
     """渲染损失率与贫化率趋势图"""
     st.markdown("### 📈 损失率与贫化率变化趋势")
+    
+    loss_warn = ld_cfg['loss_rate_warning']
+    loss_danger = ld_cfg['loss_rate_danger']
+    dil_warn = ld_cfg['dilution_rate_warning']
+    dil_danger = ld_cfg['dilution_rate_danger']
     
     # 按区域分组展示
     if selected_zone == '全部区域':
@@ -180,7 +225,8 @@ def _render_trend_charts(df, selected_zone):
             ))
             
             # 标记异常点
-            anomaly_df = zone_df[zone_df['is_anomaly'] == True]
+            anomaly_col = 'is_anomaly_dyn' if 'is_anomaly_dyn' in zone_df.columns else 'is_anomaly'
+            anomaly_df = zone_df[zone_df[anomaly_col] == True]
             if not anomaly_df.empty:
                 fig.add_trace(go.Scatter(
                     x=anomaly_df['date'],
@@ -196,19 +242,31 @@ def _render_trend_charts(df, selected_zone):
                     showlegend=(i == 0)
                 ))
         
-        # 添加参考线
+        # 添加损失率预警线
         fig.add_hline(
-            y=5,
+            y=loss_warn,
             line_dash="dot",
-            line_color="gray",
-            annotation_text="损失率警戒线 (5%)",
+            line_color="#f59e0b",
+            line_width=2,
+            annotation_text=f"损失率预警线 ({loss_warn}%)",
             annotation_position="top right"
         )
         fig.add_hline(
-            y=8,
+            y=loss_danger,
+            line_dash="dash",
+            line_color="#dc2626",
+            line_width=2,
+            annotation_text=f"损失率危险线 ({loss_danger}%)",
+            annotation_position="top left"
+        )
+        # 添加贫化率预警线
+        fig.add_hline(
+            y=dil_warn,
             line_dash="dot",
-            line_color="gray",
-            annotation_text="贫化率警戒线 (8%)",
+            line_color="#f59e0b",
+            line_width=1.5,
+            opacity=0.7,
+            annotation_text=f"贫化率预警线 ({dil_warn}%)",
             annotation_position="bottom right"
         )
         
@@ -262,9 +320,11 @@ def _render_trend_charts(df, selected_zone):
         st.plotly_chart(fig_box, use_container_width=True)
 
 
-def _render_grade_comparison(df, selected_zone):
+def _render_grade_comparison(df, selected_zone, ld_cfg):
     """渲染实际品位与预测品位对比"""
     st.markdown("### 🔬 品位对比分析")
+    
+    grade_warn = ld_cfg['grade_deviation_warning']
     
     col1, col2 = st.columns([2, 1])
     
@@ -284,7 +344,8 @@ def _render_grade_comparison(df, selected_zone):
             color = colors[i % len(colors)]
             
             # 正常数据
-            normal = zone_df[zone_df['is_anomaly'] == False]
+            anomaly_col = 'is_anomaly_dyn' if 'is_anomaly_dyn' in zone_df.columns else 'is_anomaly'
+            normal = zone_df[zone_df[anomaly_col] == False]
             fig_scatter.add_trace(go.Scatter(
                 x=normal['predicted_grade'],
                 y=normal['actual_grade'],
@@ -295,7 +356,7 @@ def _render_grade_comparison(df, selected_zone):
             ))
             
             # 异常数据
-            anomaly = zone_df[zone_df['is_anomaly'] == True]
+            anomaly = zone_df[zone_df[anomaly_col] == True]
             if not anomaly.empty:
                 fig_scatter.add_trace(go.Scatter(
                     x=anomaly['predicted_grade'],
@@ -323,6 +384,26 @@ def _render_grade_comparison(df, selected_zone):
             line=dict(color='gray', width=2, dash='dash')
         ))
         
+        # 添加偏差允许带
+        fig_scatter.add_trace(go.Scatter(
+            x=[min_val, max_val],
+            y=[min_val + grade_warn, max_val + grade_warn],
+            mode='lines',
+            name=f'上偏差线 (+{grade_warn}%)',
+            line=dict(color='#f59e0b', width=1.5, dash='dot'),
+            opacity=0.7
+        ))
+        fig_scatter.add_trace(go.Scatter(
+            x=[min_val, max_val],
+            y=[min_val - grade_warn, max_val - grade_warn],
+            mode='lines',
+            name=f'下偏差线 (-{grade_warn}%)',
+            line=dict(color='#f59e0b', width=1.5, dash='dot'),
+            fill='tonexty',
+            fillcolor='rgba(245, 158, 11, 0.1)',
+            opacity=0.7
+        ))
+        
         fig_scatter.update_layout(
             title='实际品位 vs 地质预测品位',
             xaxis_title='地质预测品位 (%)',
@@ -343,25 +424,31 @@ def _render_grade_comparison(df, selected_zone):
     with col2:
         # 统计信息
         st.markdown("#### 📊 品位偏差统计")
-        df['grade_deviation'] = df['actual_grade'] - df['predicted_grade']
+        if 'grade_deviation' not in df.columns:
+            df['grade_deviation'] = df['actual_grade'] - df['predicted_grade']
+        
+        within_warn = (abs(df['grade_deviation']) <= grade_warn).sum() / len(df) * 100
         
         stats = {
             '平均偏差': f"{df['grade_deviation'].mean():+.2f}%",
             '最大正偏差': f"{df['grade_deviation'].max():+.2f}%",
             '最大负偏差': f"{df['grade_deviation'].min():+.2f}%",
             '标准偏差': f"{df['grade_deviation'].std():.2f}%",
-            '偏差在±2%内占比': f"{(abs(df['grade_deviation']) <= 2).sum() / len(df) * 100:.1f}%"
+            f'偏差在±{grade_warn}%内占比': f"{within_warn:.1f}%"
         }
         
         for key, value in stats.items():
             st.metric(label=key, value=value)
 
 
-def _render_anomaly_analysis(full_df, filtered_df):
+def _render_anomaly_analysis(full_df, filtered_df, ld_cfg):
     """渲染异常数据分析"""
     st.markdown("### 🚨 异常数据分析")
     
-    anomaly_df = filtered_df[filtered_df['is_anomaly'] == True].copy()
+    anomaly_col = 'is_anomaly_dyn' if 'is_anomaly_dyn' in filtered_df.columns else 'is_anomaly'
+    reason_col = 'anomaly_reason_dyn' if 'anomaly_reason_dyn' in filtered_df.columns else 'anomaly_reason'
+    
+    anomaly_df = filtered_df[filtered_df[anomaly_col] == True].copy()
     
     if anomaly_df.empty:
         st.info("当前筛选条件下没有异常数据")
@@ -371,7 +458,7 @@ def _render_anomaly_analysis(full_df, filtered_df):
     
     with col1:
         # 异常原因分布
-        reason_counts = anomaly_df['anomaly_reason'].value_counts().reset_index()
+        reason_counts = anomaly_df[reason_col].value_counts().reset_index()
         reason_counts.columns = ['异常原因', '次数']
         
         fig_reason = px.pie(
@@ -417,7 +504,7 @@ def _render_anomaly_analysis(full_df, filtered_df):
         anomaly_display = anomaly_display.sort_values('date', ascending=False)
         
         display_cols = ['date', 'zone', 'loss_rate', 'dilution_rate', 
-                       'actual_grade', 'predicted_grade', 'anomaly_reason', 'ore_mined']
+                       'actual_grade', 'predicted_grade', reason_col, 'ore_mined']
         anomaly_display = anomaly_display[display_cols]
         anomaly_display.columns = ['日期', '区域', '损失率(%)', '贫化率(%)', 
                                    '实际品位(%)', '预测品位(%)', '异常原因', '采矿量(吨)']
@@ -428,3 +515,34 @@ def _render_anomaly_analysis(full_df, filtered_df):
         anomaly_display['采矿量(吨)'] = anomaly_display['采矿量(吨)'].round(0).astype(int)
         
         st.dataframe(anomaly_display, use_container_width=True, hide_index=True)
+    
+    # 详细数据表
+    with st.expander("📋 查看完整数据明细"):
+        display_df = filtered_df.copy()
+        display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d')
+        display_df = display_df.sort_values('date', ascending=False)
+        display_cols = {
+            'date': '日期',
+            'zone': '采矿区域',
+            'loss_rate': '损失率(%)',
+            'dilution_rate': '贫化率(%)',
+            'actual_grade': '实际品位(%)',
+            'predicted_grade': '预测品位(%)',
+            anomaly_col: '是否异常',
+            reason_col: '异常原因',
+            'ore_mined': '采矿量(吨)'
+        }
+        available_cols = [c for c in display_cols.keys() if c in display_df.columns]
+        display_df = display_df[available_cols]
+        display_df.columns = [display_cols[c] for c in available_cols]
+        if '损失率(%)' in display_df.columns:
+            display_df['损失率(%)'] = display_df['损失率(%)'].round(2)
+        if '贫化率(%)' in display_df.columns:
+            display_df['贫化率(%)'] = display_df['贫化率(%)'].round(2)
+        if '实际品位(%)' in display_df.columns:
+            display_df['实际品位(%)'] = display_df['实际品位(%)'].round(2)
+        if '预测品位(%)' in display_df.columns:
+            display_df['预测品位(%)'] = display_df['预测品位(%)'].round(2)
+        if '采矿量(吨)' in display_df.columns:
+            display_df['采矿量(吨)'] = display_df['采矿量(吨)'].round(0).astype(int)
+        st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)

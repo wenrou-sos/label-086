@@ -10,9 +10,15 @@ import streamlit as st
 from utils.data_loader import load_shovel_efficiency, load_truck_efficiency
 
 
-def render_equipment_efficiency():
+def render_equipment_efficiency(config=None):
     """渲染设备效率分析模块"""
     st.markdown("## 🚜 设备效率分析")
+    
+    if config is None:
+        from utils.config import load_config
+        config = load_config()
+    
+    eq_cfg = config['equipment']
     
     shovel_df = load_shovel_efficiency()
     truck_df = load_truck_efficiency()
@@ -60,30 +66,63 @@ def render_equipment_efficiency():
     ].copy()
     
     # 总体KPI
-    _render_overall_kpi(shovel_filtered, truck_filtered)
+    _render_overall_kpi(shovel_filtered, truck_filtered, eq_cfg)
     
     st.markdown("---")
     
     # 电铲效率分析
     if equipment_type in ["全部设备", "电铲"]:
-        _render_shovel_analysis(shovel_filtered, sort_order)
+        _render_shovel_analysis(shovel_filtered, sort_order, eq_cfg)
         st.markdown("---")
     
     # 矿车效率分析
     if equipment_type in ["全部设备", "矿车"]:
-        _render_truck_analysis(truck_filtered, sort_order)
+        _render_truck_analysis(truck_filtered, sort_order, eq_cfg)
         st.markdown("---")
     
     # 低效设备检修建议
-    _render_maintenance_suggestions(shovel_filtered, truck_filtered)
+    _render_maintenance_suggestions(shovel_filtered, truck_filtered, eq_cfg)
 
 
-def _render_overall_kpi(shovel_df, truck_df):
+def _render_overall_kpi(shovel_df, truck_df, eq_cfg):
     """渲染总体KPI指标"""
     avg_shovel_efficiency = shovel_df['loading_efficiency'].mean()
     avg_truck_efficiency = truck_df['trips_per_shift'].mean()
     total_cars = shovel_df['cars_loaded'].sum()
     total_tons = truck_df['tons_transported'].sum()
+    
+    shovel_warn = eq_cfg['shovel_efficiency_warning']
+    shovel_danger = eq_cfg['shovel_efficiency_danger']
+    truck_warn = eq_cfg['truck_efficiency_warning']
+    truck_danger = eq_cfg['truck_efficiency_danger']
+    
+    # 电铲状态（秒数越低越好）
+    if avg_shovel_efficiency <= shovel_warn:
+        s_status = 'ok'
+        s_color = '#059669'
+        s_label = '✅ 正常'
+    elif avg_shovel_efficiency <= shovel_danger:
+        s_status = 'warning'
+        s_color = '#f59e0b'
+        s_label = '⚠️ 预警'
+    else:
+        s_status = 'danger'
+        s_color = '#dc2626'
+        s_label = '🚨 异常'
+    
+    # 矿车状态（趟数越高越好）
+    if avg_truck_efficiency >= truck_warn:
+        t_status = 'ok'
+        t_color = '#059669'
+        t_label = '✅ 正常'
+    elif avg_truck_efficiency >= truck_danger:
+        t_status = 'warning'
+        t_color = '#f59e0b'
+        t_label = '⚠️ 预警'
+    else:
+        t_status = 'danger'
+        t_color = '#dc2626'
+        t_label = '🚨 异常'
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -91,14 +130,18 @@ def _render_overall_kpi(shovel_df, truck_df):
         st.metric(
             label="平均电铲装车效率",
             value=f"{avg_shovel_efficiency:.1f} 秒/车",
-            delta="数值越低越好"
+            delta=s_label,
+            delta_color='normal'
         )
+        st.caption(f"<span style='color:{s_color}'>预警: {shovel_warn}秒 | 危险: {shovel_danger}秒</span>", unsafe_allow_html=True)
     with col2:
         st.metric(
             label="平均矿车运输效率",
             value=f"{avg_truck_efficiency:.1f} 趟/班",
-            delta="数值越高越好"
+            delta=t_label,
+            delta_color='normal'
         )
+        st.caption(f"<span style='color:{t_color}'>预警: {truck_warn}趟 | 危险: {truck_danger}趟</span>", unsafe_allow_html=True)
     with col3:
         st.metric(
             label="累计装车数",
@@ -111,9 +154,12 @@ def _render_overall_kpi(shovel_df, truck_df):
         )
 
 
-def _render_shovel_analysis(shovel_df, sort_order):
+def _render_shovel_analysis(shovel_df, sort_order, eq_cfg):
     """渲染电铲效率分析"""
     st.markdown("### ⛏️ 电铲装车效率分析")
+    
+    shovel_warn = eq_cfg['shovel_efficiency_warning']
+    shovel_danger = eq_cfg['shovel_efficiency_danger']
     
     # 按设备汇总
     shovel_summary = shovel_df.groupby('equipment_id').agg({
@@ -128,11 +174,15 @@ def _render_shovel_analysis(shovel_df, sort_order):
     ascending = True if "从低到高" in sort_order else False
     shovel_summary = shovel_summary.sort_values('平均装车效率(秒/车)', ascending=ascending)
     
-    # 图表 - 柱状图
-    fig_colors = ['#dc2626' if x >= shovel_summary['平均装车效率(秒/车)'].quantile(0.75) 
-                  else '#f59e0b' if x >= shovel_summary['平均装车效率(秒/车)'].quantile(0.5)
-                  else '#2563eb' 
-                  for x in shovel_summary['平均装车效率(秒/车)']]
+    # 图表 - 柱状图（根据阈值动态着色）
+    fig_colors = []
+    for x in shovel_summary['平均装车效率(秒/车)']:
+        if x <= shovel_warn:
+            fig_colors.append('#059669')
+        elif x <= shovel_danger:
+            fig_colors.append('#f59e0b')
+        else:
+            fig_colors.append('#dc2626')
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -142,11 +192,23 @@ def _render_shovel_analysis(shovel_df, sort_order):
         text=shovel_summary['平均装车效率(秒/车)'].round(1),
         textposition='outside'
     ))
+    # 预警线
     fig.add_hline(
-        y=shovel_summary['平均装车效率(秒/车)'].mean(),
+        y=shovel_warn,
         line_dash="dash",
-        line_color="#6b7280",
-        annotation_text=f"平均值: {shovel_summary['平均装车效率(秒/车)'].mean():.1f}秒/车"
+        line_color="#f59e0b",
+        line_width=1.5,
+        annotation_text=f"预警线 ({shovel_warn}秒/车)",
+        annotation_position="top right"
+    )
+    # 危险线
+    fig.add_hline(
+        y=shovel_danger,
+        line_dash="dot",
+        line_color="#dc2626",
+        line_width=1.5,
+        annotation_text=f"危险线 ({shovel_danger}秒/车)",
+        annotation_position="bottom right"
     )
     fig.update_layout(
         title='各电铲平均装车效率（秒/车，越低越好）',
@@ -178,11 +240,21 @@ def _render_shovel_analysis(shovel_df, sort_order):
             line=dict(color='#2563eb', width=2),
             marker=dict(size=5)
         ))
+        # 预警线
         fig_trend.add_hline(
-            y=shovel_trend['loading_efficiency'].mean(),
+            y=shovel_warn,
             line_dash="dash",
+            line_color="#f59e0b",
+            line_width=1.5,
+            annotation_text=f"预警 ({shovel_warn}秒)"
+        )
+        # 危险线
+        fig_trend.add_hline(
+            y=shovel_danger,
+            line_dash="dot",
             line_color="#dc2626",
-            annotation_text=f"平均: {shovel_trend['loading_efficiency'].mean():.1f}秒"
+            line_width=1.5,
+            annotation_text=f"危险 ({shovel_danger}秒)"
         )
         fig_trend.update_layout(
             title=f'{selected_shovel} 装车效率趋势',
@@ -202,9 +274,12 @@ def _render_shovel_analysis(shovel_df, sort_order):
         )
 
 
-def _render_truck_analysis(truck_df, sort_order):
+def _render_truck_analysis(truck_df, sort_order, eq_cfg):
     """渲染矿车效率分析"""
     st.markdown("### 🚛 矿车运输效率分析")
+    
+    truck_warn = eq_cfg['truck_efficiency_warning']
+    truck_danger = eq_cfg['truck_efficiency_danger']
     
     # 按设备汇总
     truck_summary = truck_df.groupby('equipment_id').agg({
@@ -219,11 +294,15 @@ def _render_truck_analysis(truck_df, sort_order):
     ascending = False if "从低到高" in sort_order else True
     truck_summary = truck_summary.sort_values('平均运输效率(趟/班)', ascending=ascending)
     
-    # 图表
-    fig_colors = ['#dc2626' if x <= truck_summary['平均运输效率(趟/班)'].quantile(0.25)
-                  else '#f59e0b' if x <= truck_summary['平均运输效率(趟/班)'].quantile(0.5)
-                  else '#059669'
-                  for x in truck_summary['平均运输效率(趟/班)']]
+    # 图表（根据阈值动态着色）
+    fig_colors = []
+    for x in truck_summary['平均运输效率(趟/班)']:
+        if x >= truck_warn:
+            fig_colors.append('#059669')
+        elif x >= truck_danger:
+            fig_colors.append('#f59e0b')
+        else:
+            fig_colors.append('#dc2626')
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -233,11 +312,23 @@ def _render_truck_analysis(truck_df, sort_order):
         text=truck_summary['平均运输效率(趟/班)'].round(1),
         textposition='outside'
     ))
+    # 预警线
     fig.add_hline(
-        y=truck_summary['平均运输效率(趟/班)'].mean(),
+        y=truck_warn,
         line_dash="dash",
-        line_color="#6b7280",
-        annotation_text=f"平均值: {truck_summary['平均运输效率(趟/班)'].mean():.1f}趟/班"
+        line_color="#f59e0b",
+        line_width=1.5,
+        annotation_text=f"预警线 ({truck_warn}趟/班)",
+        annotation_position="top right"
+    )
+    # 危险线
+    fig.add_hline(
+        y=truck_danger,
+        line_dash="dot",
+        line_color="#dc2626",
+        line_width=1.5,
+        annotation_text=f"危险线 ({truck_danger}趟/班)",
+        annotation_position="bottom right"
     )
     fig.update_layout(
         title='各矿车平均运输效率（趟/班，越高越好）',
@@ -276,27 +367,29 @@ def _render_truck_analysis(truck_df, sort_order):
         )
 
 
-def _render_maintenance_suggestions(shovel_df, truck_df):
+def _render_maintenance_suggestions(shovel_df, truck_df, eq_cfg):
     """渲染低效设备检修建议"""
     st.markdown("### 🔧 低效设备检修建议")
     
-    # 获取低效设备 - 电铲（效率最低的前5台，即秒数最高的）
+    bottom_n = eq_cfg['bottom_n_count']
+    
+    # 获取低效设备 - 电铲（效率最低的前N台，即秒数最高的）
     shovel_low = shovel_df.groupby('equipment_id').agg({
         'loading_efficiency': 'mean',
         'cars_loaded': 'sum',
         'operating_hours': 'sum'
     }).reset_index()
-    shovel_low = shovel_low.sort_values('loading_efficiency', ascending=False).head(5)
+    shovel_low = shovel_low.sort_values('loading_efficiency', ascending=False).head(bottom_n)
     shovel_low['设备类型'] = '电铲'
     shovel_low['效率指标'] = shovel_low['loading_efficiency'].round(1).astype(str) + ' 秒/车'
     
-    # 获取低效设备 - 矿车（效率最低的前5台，即趟数最少的）
+    # 获取低效设备 - 矿车（效率最低的前N台，即趟数最少的）
     truck_low = truck_df.groupby('equipment_id').agg({
         'trips_per_shift': 'mean',
         'tons_transported': 'sum',
         'operating_hours': 'sum'
     }).reset_index()
-    truck_low = truck_low.sort_values('trips_per_shift', ascending=True).head(5)
+    truck_low = truck_low.sort_values('trips_per_shift', ascending=True).head(bottom_n)
     truck_low['设备类型'] = '矿车'
     truck_low['效率指标'] = truck_low['trips_per_shift'].round(1).astype(str) + ' 趟/班'
     
@@ -304,7 +397,7 @@ def _render_maintenance_suggestions(shovel_df, truck_df):
     col_shovel, col_truck = st.columns(2)
     
     with col_shovel:
-        st.markdown("#### ⚠️ 电铲装车效率最低 TOP 5")
+        st.markdown(f"#### ⚠️ 电铲装车效率最低 TOP {bottom_n}")
         shovel_display = shovel_low[['equipment_id', '设备类型', '效率指标', 'cars_loaded', 'operating_hours']].copy()
         shovel_display.columns = ['设备编号', '设备类型', '效率指标', '累计装车数', '运行时长(小时)']
         shovel_display['运行时长(小时)'] = shovel_display['运行时长(小时)'].round(1)
@@ -318,7 +411,7 @@ def _render_maintenance_suggestions(shovel_df, truck_df):
                 st.markdown(f"- 💡 检修建议: {suggestion}")
     
     with col_truck:
-        st.markdown("#### ⚠️ 矿车运输效率最低 TOP 5")
+        st.markdown(f"#### ⚠️ 矿车运输效率最低 TOP {bottom_n}")
         truck_display = truck_low[['equipment_id', '设备类型', '效率指标', 'tons_transported', 'operating_hours']].copy()
         truck_display.columns = ['设备编号', '设备类型', '效率指标', '累计运输量(吨)', '运行时长(小时)']
         truck_display['运行时长(小时)'] = truck_display['运行时长(小时)'].round(1)

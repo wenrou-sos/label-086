@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
 from utils.data_loader import load_mining_cost
+from utils.config import safe_get_optimal_range
 
 
 def render_cost_analysis(config=None):
@@ -661,8 +662,7 @@ def _render_cost_warnings(full_df, current_df, config):
         
         # 通用优化建议
         st.markdown("#### 💡 成本优化建议汇总")
-        opt_min = blast_cfg['optimal_powder_min']
-        opt_max = blast_cfg['optimal_powder_max']
+        opt_min, opt_max = safe_get_optimal_range(blast_cfg)
         suggestions = [
             "穿孔成本: 优化钻孔参数，减少废孔率；定期检查钻头磨损情况",
             f"爆破成本: 采用最佳炸药单耗区间（{opt_min}-{opt_max}kg/t），优化爆破设计",

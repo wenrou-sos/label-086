@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import streamlit as st
 from utils.data_loader import load_blasting_effect
+from utils.config import safe_get_optimal_range
 
 
 def render_blasting_effect(config=None):
@@ -19,7 +20,11 @@ def render_blasting_effect(config=None):
         from utils.config import load_config
         config = load_config()
     
-    blast_cfg = config['blasting']
+    blast_cfg = config['blasting'].copy()
+    
+    opt_min, opt_max = safe_get_optimal_range(blast_cfg)
+    blast_cfg['optimal_powder_min'] = opt_min
+    blast_cfg['optimal_powder_max'] = opt_max
     
     df = load_blasting_effect()
     if df.empty:

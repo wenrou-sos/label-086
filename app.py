@@ -424,11 +424,22 @@ def render_alert_settings():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 保存配置", use_container_width=True, type="primary"):
-            if save_config(config):
-                st.success("配置保存成功！页面将自动刷新")
+            success, fixes, errors = save_config(config, auto_fix=True)
+            if success:
+                msg_parts = ["配置保存成功！"]
+                if fixes:
+                    msg_parts.append("已自动修正以下问题：")
+                    msg_parts.extend([f"- {f}" for f in fixes])
+                msg_parts.append("页面将自动刷新...")
+                st.success("\n\n".join(msg_parts))
                 from utils import config as cfg_mod
                 cfg_mod.load_config.clear()
                 st.rerun()
+            else:
+                if errors:
+                    st.error("配置存在以下问题，保存失败：\n\n" + "\n\n".join([f"- {e}" for e in errors]))
+                if fixes:
+                    st.warning("已自动修正以下问题：\n\n" + "\n\n".join([f"- {f}" for f in fixes]))
     with col2:
         if st.button("🔄 恢复默认", use_container_width=True):
             if reset_config():

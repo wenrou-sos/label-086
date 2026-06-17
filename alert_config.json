@@ -1,0 +1,36 @@
+{
+  "production": {
+    "completion_rate_warning": 90,
+    "completion_rate_danger": 80,
+    "target_ore_volume": 8000,
+    "target_total_volume": 23000
+  },
+  "equipment": {
+    "shovel_efficiency_warning": 80,
+    "shovel_efficiency_danger": 90,
+    "truck_efficiency_warning": 8,
+    "truck_efficiency_danger": 6,
+    "bottom_n_count": 5
+  },
+  "loss_dilution": {
+    "loss_rate_warning": 5.0,
+    "loss_rate_danger": 7.0,
+    "dilution_rate_warning": 8.0,
+    "dilution_rate_danger": 10.0,
+    "grade_deviation_warning": 2.0,
+    "grade_deviation_danger": 4.0
+  },
+  "blasting": {
+    "optimal_powder_min": 0.4,
+    "optimal_powder_max": 0.6,
+    "quality_target": 85.0,
+    "quality_warning": 80.0,
+    "quality_danger": 70.0
+  },
+  "cost": {
+    "total_cost_warning": 9.5,
+    "total_cost_danger": 10.5,
+    "cost_fluctuation_warning": 5.0,
+    "cost_fluctuation_danger": 10.0
+  }
+}

@@ -1,0 +1,548 @@
+"""
+爆破效果模块
+分析炸药单耗与块度合格率关系、识别最佳参数区间、提供相关性分析等
+"""
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+import streamlit as st
+from utils.data_loader import load_blasting_effect
+
+
+def render_blasting_effect():
+    """渲染爆破效果分析模块"""
+    st.markdown("## 💥 爆破效果分析")
+    
+    df = load_blasting_effect()
+    if df.empty:
+        st.warning("爆破效果数据加载失败，请检查数据文件")
+        return
+    
+    # 筛选控件
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        areas = ['全部区域'] + sorted(df['blast_area'].unique().tolist())
+        selected_area = st.selectbox("选择爆破区域", areas)
+    with col2:
+        date_min = df['date'].min().date()
+        date_max = df['date'].max().date()
+        default_start = date_max - pd.Timedelta(days=365)
+        date_range = st.date_input(
+            "选择时间范围",
+            value=(default_start, date_max),
+            min_value=date_min,
+            max_value=date_max
+        )
+    with col3:
+        show_optimal_only = st.checkbox("仅显示最佳区间数据", value=False)
+    
+    st.markdown("---")
+    
+    # 过滤数据
+    start_date, end_date = date_range
+    filtered_df = df[
+        (df['date'] >= pd.to_datetime(start_date)) &
+        (df['date'] <= pd.to_datetime(end_date))
+    ].copy()
+    
+    if selected_area != '全部区域':
+        filtered_df = filtered_df[filtered_df['blast_area'] == selected_area]
+    
+    if show_optimal_only:
+        filtered_df = filtered_df[filtered_df['is_optimal'] == True]
+    
+    # 总体KPI
+    _render_kpi_cards(filtered_df)
+    
+    st.markdown("---")
+    
+    # 核心散点图：炸药单耗 vs 块度合格率
+    _render_scatter_analysis(filtered_df)
+    
+    st.markdown("---")
+    
+    # 相关性分析和趋势预测
+    col1, col2 = st.columns(2)
+    with col1:
+        _render_correlation_analysis(filtered_df)
+    with col2:
+        _render_trend_prediction(filtered_df)
+    
+    st.markdown("---")
+    
+    # 最佳区间分析
+    _render_optimal_zone_analysis(df, filtered_df)
+    
+    st.markdown("---")
+    
+    # 区域对比
+    _render_area_comparison(df, filtered_df, selected_area)
+    
+    # 详细数据表
+    with st.expander("📋 查看爆破记录明细"):
+        display_df = filtered_df.copy()
+        display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d')
+        display_df = display_df.sort_values('date', ascending=False)
+        display_cols = {
+            'date': '日期',
+            'blast_id': '爆破编号',
+            'blast_area': '爆破区域',
+            'powder_factor': '炸药单耗(kg/t)',
+            'fragmentation_quality': '块度合格率(%)',
+            'hole_count': '炮孔数',
+            'total_explosive': '炸药总量(kg)',
+            'is_optimal': '是否最佳区间'
+        }
+        display_df = display_df[list(display_cols.keys())]
+        display_df.columns = list(display_cols.values())
+        st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
+
+
+def _render_kpi_cards(df):
+    """渲染KPI指标卡片"""
+    avg_powder = df['powder_factor'].mean()
+    avg_quality = df['fragmentation_quality'].mean()
+    optimal_count = df['is_optimal'].sum()
+    optimal_rate = optimal_count / len(df) * 100 if len(df) > 0 else 0
+    total_blasts = len(df)
+    
+    # 计算最佳区间
+    optimal_df = df[df['is_optimal'] == True]
+    if len(optimal_df) > 0:
+        optimal_avg_quality = optimal_df['fragmentation_quality'].mean()
+    else:
+        optimal_avg_quality = 0
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric(
+            label="平均炸药单耗",
+            value=f"{avg_powder:.3f} kg/t",
+            delta="参考: 0.45-0.55"
+        )
+    with col2:
+        st.metric(
+            label="平均块度合格率",
+            value=f"{avg_quality:.1f}%",
+            delta=f"最佳区间平均: {optimal_avg_quality:.1f}%"
+        )
+    with col3:
+        st.metric(
+            label="最佳区间占比",
+            value=f"{optimal_rate:.1f}%",
+            delta=f"{optimal_count}/{total_blasts} 次"
+        )
+    with col4:
+        st.metric(
+            label="总爆破次数",
+            value=f"{total_blasts} 次"
+        )
+
+
+def _render_scatter_analysis(df):
+    """渲染炸药单耗与块度合格率散点图"""
+    st.markdown("### 📊 炸药单耗 vs 块度合格率")
+    
+    # 散点图
+    fig = go.Figure()
+    
+    # 非最佳数据
+    non_optimal = df[df['is_optimal'] == False]
+    fig.add_trace(go.Scatter(
+        x=non_optimal['powder_factor'],
+        y=non_optimal['fragmentation_quality'],
+        mode='markers',
+        name='普通数据',
+        marker=dict(
+            color='#6b7280',
+            size=8,
+            opacity=0.6,
+            line=dict(width=1, color='white')
+        ),
+        hovertemplate=(
+            '炸药单耗: %{x:.3f} kg/t<br>'
+            '块度合格率: %{y:.1f}%<br>'
+            '<extra></extra>'
+        )
+    ))
+    
+    # 最佳区间数据
+    optimal = df[df['is_optimal'] == True]
+    if not optimal.empty:
+        fig.add_trace(go.Scatter(
+            x=optimal['powder_factor'],
+            y=optimal['fragmentation_quality'],
+            mode='markers',
+            name='最佳区间',
+            marker=dict(
+                color='#059669',
+                size=10,
+                symbol='circle',
+                line=dict(width=2, color='white')
+            ),
+            hovertemplate=(
+                '炸药单耗: %{x:.3f} kg/t<br>'
+                '块度合格率: %{y:.1f}%<br>'
+                '✅ 最佳参数区间<br>'
+                '<extra></extra>'
+            )
+        ))
+    
+    # 添加最佳区间背景
+    fig.add_vrect(
+        x0=0.45, x1=0.55,
+        fillcolor="#059669", opacity=0.1,
+        layer="below", line_width=0,
+        annotation_text="最佳区间<br>0.45-0.55 kg/t",
+        annotation_position="top right"
+    )
+    
+    # 添加趋势线
+    if len(df) > 10:
+        z = np.polyfit(df['powder_factor'], df['fragmentation_quality'], 2)
+        p = np.poly1d(z)
+        x_trend = np.linspace(df['powder_factor'].min(), df['powder_factor'].max(), 100)
+        y_trend = p(x_trend)
+        
+        fig.add_trace(go.Scatter(
+            x=x_trend,
+            y=y_trend,
+            mode='lines',
+            name='二次趋势线',
+            line=dict(color='#dc2626', width=2.5, dash='dash')
+        ))
+    
+    fig.update_layout(
+        title='炸药单耗与块度合格率关系散点图',
+        xaxis_title='炸药单耗 (kg/t)',
+        yaxis_title='块度合格率 (%)',
+        yaxis=dict(range=[55, 100]),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
+        ),
+        template='plotly_white',
+        height=450,
+        hovermode='closest'
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_correlation_analysis(df):
+    """渲染相关性分析"""
+    st.markdown("### 🔗 相关性分析")
+    
+    if len(df) < 5:
+        st.info("数据量不足，无法进行相关性分析")
+        return
+    
+    # 计算相关系数
+    corr = df['powder_factor'].corr(df['fragmentation_quality'])
+    abs_corr = abs(corr)
+    
+    # 相关系数强度说明
+    if abs_corr >= 0.8:
+        strength = "强相关"
+        color = "#059669"
+    elif abs_corr >= 0.5:
+        strength = "中等相关"
+        color = "#f59e0b"
+    elif abs_corr >= 0.3:
+        strength = "弱相关"
+        color = "#2563eb"
+    else:
+        strength = "极弱或无相关"
+        color = "#6b7280"
+    
+    direction = "正相关" if corr > 0 else "负相关"
+    
+    # 可视化相关系数
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=corr,
+        domain={'x': [0, 1], 'y': [0, 1]},
+        title={'text': f'相关系数 (Pearson)<br><span style="color:{color}; font-size:0.8em">{strength} · {direction}</span>'},
+        gauge={
+            'axis': {'range': [-1, 1], 'tickwidth': 1, 'tickcolor': "darkblue"},
+            'bar': {'color': color},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "#e5e7eb",
+            'steps': [
+                {'range': [-1, -0.8], 'color': '#fecaca'},
+                {'range': [-0.8, -0.5], 'color': '#fed7aa'},
+                {'range': [-0.5, 0.5], 'color': '#f3f4f6'},
+                {'range': [0.5, 0.8], 'color': '#fed7aa'},
+                {'range': [0.8, 1], 'color': '#fecaca'}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': corr
+            }
+        },
+        number={'valueformat': '.3f'}
+    ))
+    
+    fig.update_layout(height=350)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 统计数据
+    st.markdown("#### 📈 统计摘要")
+    stats = {
+        '爆破次数': len(df),
+        '炸药单耗范围': f"{df['powder_factor'].min():.3f} ~ {df['powder_factor'].max():.3f}",
+        '块度合格率范围': f"{df['fragmentation_quality'].min():.1f}% ~ {df['fragmentation_quality'].max():.1f}%",
+        '炸药单耗标准差': f"{df['powder_factor'].std():.4f}",
+        '块度合格率标准差': f"{df['fragmentation_quality'].std():.2f}%"
+    }
+    for k, v in stats.items():
+        st.markdown(f"- **{k}**: {v}")
+
+
+def _render_trend_prediction(df):
+    """渲染趋势预测"""
+    st.markdown("### 🔮 块度合格率趋势预测")
+    
+    if len(df) < 10:
+        st.info("数据量不足，无法进行趋势预测")
+        return
+    
+    # 按日期聚合
+    df_daily = df.groupby(df['date'].dt.to_period('W').dt.start_time).agg({
+        'powder_factor': 'mean',
+        'fragmentation_quality': 'mean'
+    }).reset_index()
+    df_daily = df_daily.sort_values('date')
+    
+    # 使用移动平均
+    window = min(4, len(df_daily))
+    df_daily['ma_quality'] = df_daily['fragmentation_quality'].rolling(window=window).mean()
+    
+    # 简单的线性预测（基于最近趋势）
+    x = np.arange(len(df_daily))
+    y = df_daily['fragmentation_quality'].values
+    
+    # 线性回归
+    if len(x) >= 5:
+        z = np.polyfit(x, y, 1)
+        slope, intercept = z
+        
+        # 预测未来4个周期
+        future_x = np.arange(len(df_daily), len(df_daily) + 4)
+        future_y = slope * future_x + intercept
+        
+        fig = go.Figure()
+        
+        # 历史数据
+        fig.add_trace(go.Scatter(
+            x=df_daily['date'],
+            y=df_daily['fragmentation_quality'],
+            mode='lines+markers',
+            name='实际块度合格率',
+            line=dict(color='#2563eb', width=2),
+            marker=dict(size=6)
+        ))
+        
+        # 移动平均
+        fig.add_trace(go.Scatter(
+            x=df_daily['date'],
+            y=df_daily['ma_quality'],
+            mode='lines',
+            name=f'{window}周移动平均',
+            line=dict(color='#f59e0b', width=2, dash='dash')
+        ))
+        
+        # 预测数据
+        last_date = df_daily['date'].iloc[-1]
+        future_dates = [last_date + pd.Timedelta(weeks=i) for i in range(1, 5)]
+        fig.add_trace(go.Scatter(
+            x=future_dates,
+            y=future_y,
+            mode='lines+markers',
+            name='趋势预测',
+            line=dict(color='#059669', width=2, dash='dot'),
+            marker=dict(size=8, symbol='diamond')
+        ))
+        
+        fig.update_layout(
+            title='块度合格率周趋势及预测',
+            xaxis_title='日期',
+            yaxis_title='块度合格率 (%)',
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            ),
+            template='plotly_white',
+            height=350
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 预测趋势说明
+        trend_dir = "上升" if slope > 0 else "下降"
+        st.markdown(f"""
+        **趋势分析**: 
+        - 当前趋势: **{trend_dir}** (斜率: {slope:+.4f}/周)
+        - 预测未来4周平均合格率: **{np.mean(future_y):.1f}%**
+        """)
+
+
+def _render_optimal_zone_analysis(full_df, filtered_df):
+    """渲染最佳区间分析"""
+    st.markdown("### 🎯 最佳炸药单耗区间分析")
+    
+    # 分段统计
+    bins = [0.25, 0.35, 0.45, 0.50, 0.55, 0.65, 0.80]
+    labels = ['0.25-0.35', '0.35-0.45', '0.45-0.50', '0.50-0.55', '0.55-0.65', '0.65-0.80']
+    
+    df = filtered_df.copy()
+    df['pf_range'] = pd.cut(df['powder_factor'], bins=bins, labels=labels)
+    
+    zone_stats = df.groupby('pf_range').agg({
+        'fragmentation_quality': ['count', 'mean', 'std'],
+        'powder_factor': 'mean'
+    }).reset_index()
+    zone_stats.columns = ['单耗区间(kg/t)', '爆破次数', '平均合格率(%)', '合格率标准差', '平均单耗']
+    zone_stats = zone_stats.dropna()
+    
+    col1, col2 = st.columns([1.5, 1])
+    
+    with col1:
+        # 区间柱状图
+        fig = go.Figure()
+        
+        colors = ['#dc2626' if ('0.45' not in r and '0.50' not in r and '0.55' not in r) 
+                  else '#059669' 
+                  for r in zone_stats['单耗区间(kg/t)']]
+        
+        fig.add_trace(go.Bar(
+            x=zone_stats['单耗区间(kg/t)'],
+            y=zone_stats['平均合格率(%)'],
+            marker_color=colors,
+            text=zone_stats['平均合格率(%)'].round(1).astype(str) + '%',
+            textposition='outside',
+            error_y=dict(
+                type='data',
+                array=zone_stats['合格率标准差'].fillna(0),
+                visible=True,
+                color='#6b7280'
+            )
+        ))
+        
+        # 标注最佳区间
+        fig.add_vrect(
+            x0=1.5, x1=3.5,
+            fillcolor="#059669", opacity=0.1,
+            layer="below", line_width=0,
+            annotation_text="最佳区间"
+        )
+        
+        fig.update_layout(
+            title='各炸药单耗区间块度合格率对比',
+            xaxis_title='炸药单耗区间 (kg/t)',
+            yaxis_title='平均块度合格率 (%)',
+            yaxis=dict(range=[70, 100]),
+            template='plotly_white',
+            height=380
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # 最佳区间数据统计
+        st.markdown("#### 📊 最佳区间表现")
+        optimal = df[df['is_optimal'] == True]
+        non_optimal = df[df['is_optimal'] == False]
+        
+        metrics = {
+            '指标': ['平均块度合格率', '平均炸药单耗', '爆破次数占比'],
+            '最佳区间': [
+                f"{optimal['fragmentation_quality'].mean():.1f}%" if len(optimal) > 0 else "-",
+                f"{optimal['powder_factor'].mean():.3f} kg/t" if len(optimal) > 0 else "-",
+                f"{len(optimal)/len(df)*100:.1f}%" if len(df) > 0 else "-"
+            ],
+            '其他区间': [
+                f"{non_optimal['fragmentation_quality'].mean():.1f}%" if len(non_optimal) > 0 else "-",
+                f"{non_optimal['powder_factor'].mean():.3f} kg/t" if len(non_optimal) > 0 else "-",
+                f"{len(non_optimal)/len(df)*100:.1f}%" if len(df) > 0 else "-"
+            ]
+        }
+        
+        st.dataframe(pd.DataFrame(metrics), use_container_width=True, hide_index=True)
+        
+        # 建议
+        if len(optimal) > 0 and len(non_optimal) > 0:
+            diff = optimal['fragmentation_quality'].mean() - non_optimal['fragmentation_quality'].mean()
+            st.success(f"""
+            💡 **优化建议**:
+            将炸药单耗控制在 **0.45-0.55 kg/t** 区间，
+            可使块度合格率提升约 **{diff:.1f}%**
+            """)
+
+
+def _render_area_comparison(full_df, filtered_df, selected_area):
+    """渲染区域对比分析"""
+    st.markdown("### 🗺️ 各爆破区域对比")
+    
+    area_stats = filtered_df.groupby('blast_area').agg({
+        'powder_factor': ['mean', 'std'],
+        'fragmentation_quality': ['mean', 'std', 'count'],
+        'is_optimal': 'sum'
+    }).reset_index()
+    area_stats.columns = ['区域', '平均单耗', '单耗标准差', '平均合格率', '合格率标准差', '爆破次数', '最佳次数']
+    area_stats['最佳占比(%)'] = (area_stats['最佳次数'] / area_stats['爆破次数'] * 100).round(1)
+    
+    # 平行坐标图 / 雷达图
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        # 合格率对比
+        fig1 = go.Figure()
+        fig1.add_trace(go.Bar(
+            x=area_stats['区域'],
+            y=area_stats['平均合格率(%)'],
+            marker_color=['#2563eb', '#059669', '#f59e0b', '#7c3aed'],
+            text=area_stats['平均合格率(%)'].round(1).astype(str) + '%',
+            textposition='outside',
+            error_y=dict(
+                type='data',
+                array=area_stats['合格率标准差'],
+                visible=True
+            )
+        ))
+        fig1.update_layout(
+            title='各区域平均块度合格率',
+            xaxis_title='爆破区域',
+            yaxis_title='合格率 (%)',
+            yaxis=dict(range=[75, 100]),
+            template='plotly_white',
+            height=320
+        )
+        st.plotly_chart(fig1, use_container_width=True)
+    
+    with col2:
+        # 最佳区间占比
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(
+            x=area_stats['区域'],
+            y=area_stats['最佳占比(%)'],
+            marker_color=['#2563eb', '#059669', '#f59e0b', '#7c3aed'],
+            text=area_stats['最佳占比(%)'].astype(str) + '%',
+            textposition='outside'
+        ))
+        fig2.update_layout(
+            title='各区域最佳参数区间占比',
+            xaxis_title='爆破区域',
+            yaxis_title='最佳占比 (%)',
+            template='plotly_white',
+            height=320
+        )
+        st.plotly_chart(fig2, use_container_width=True)

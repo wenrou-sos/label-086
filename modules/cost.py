@@ -65,7 +65,7 @@ def render_cost_analysis(config=None):
     st.markdown("---")
     
     # 成本异常预警
-    _render_cost_warnings(df, filtered_df, cost_cfg)
+    _render_cost_warnings(df, filtered_df, config)
     
     # 详细数据
     with st.expander("📋 查看完整成本数据"):
@@ -604,9 +604,12 @@ def _render_cost_trend(full_df, current_df, cost_cfg):
     st.plotly_chart(fig_heatmap, use_container_width=True)
 
 
-def _render_cost_warnings(full_df, current_df, cost_cfg):
+def _render_cost_warnings(full_df, current_df, config):
     """渲染成本异常预警和优化建议"""
     st.markdown("### ⚠️ 成本异常预警与优化建议")
+    
+    cost_cfg = config['cost']
+    blast_cfg = config['blasting']
     
     anomaly_df = current_df[current_df['is_anomaly_dyn'] == True].copy()
     
@@ -658,8 +661,8 @@ def _render_cost_warnings(full_df, current_df, cost_cfg):
         
         # 通用优化建议
         st.markdown("#### 💡 成本优化建议汇总")
-        opt_min = cost_cfg.get('optimal_powder_min', 0.45)
-        opt_max = cost_cfg.get('optimal_powder_max', 0.55)
+        opt_min = blast_cfg['optimal_powder_min']
+        opt_max = blast_cfg['optimal_powder_max']
         suggestions = [
             "穿孔成本: 优化钻孔参数，减少废孔率；定期检查钻头磨损情况",
             f"爆破成本: 采用最佳炸药单耗区间（{opt_min}-{opt_max}kg/t），优化爆破设计",
